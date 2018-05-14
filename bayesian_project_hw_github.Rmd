@@ -1,0 +1,321 @@
+---
+title: "Bayesian modeling and prediction for movies"
+author: Hongyun Wang
+output: 
+  github_document:
+    pandoc_args: --webtex
+---
+
+## Setup
+```{r}
+# set global knitr options
+knitr::opts_chunk$set(comment=NA, fig.align='center', warning=FALSE)
+```
+
+### Load packages
+
+```{r load-packages, message=FALSE}
+library(ggplot2)
+library(MASS)
+library(dplyr)
+library(statsr)
+library(BAS)
+```
+
+### Load data
+
+The R workspace `movies.RData` was downloaded from Coursera Course page and saved in the `data` directory which is under the same directory as the Rmd file. Use `load` function to load this workspace.
+
+```{r load-data}
+load("data/movies.Rdata")
+dat <- movies
+```
+
+* * *
+
+## Part 1: Data
+
+The data set `movies`is comprised of 651 randomly sampled movies produced and released from 1970 to 2014. The sources of this data set are from Rotten Tomatoes and IMDB. Since the movies in this data set are randomly selected from a large movie sets (random sampling conducted), the movies in this data set can be **generalized** to the entire population. However, the data set cannot be used to establish **causal** relationships between the variables of interest beacuse there was no random assignment to the explanatory variables. 
+
+Preliminary check on the data set `movies`. The results are suppressed.
+```{r check data, results='hide'}
+dim(dat)
+head(dat); tail(dat)
+str(dat)
+summary(dat)
+```
+
+* * *
+
+## Part 2: Data manipulation
+
+Create 5 new variables using the mutate function in the dplyr package.
+
+```{r create new variables}
+# Assign yes to new variable feature_film, where title_type is "Feature Film". Otherwise no.
+dat <- dat %>% mutate(feature_film = as.factor(ifelse(title_type == 'Feature Film', 'yes', 'no')))
+# Assign yes to new variable drama, where genre is "Drama". Otherwise no.
+dat <- dat %>% mutate(drama = as.factor(ifelse(genre == 'Drama', 'yes', 'no')))
+# Assign yes to new variable mpaa_rating_R, where mpaa_rating is "R". Otherwise no.
+dat <- dat %>% mutate(mpaa_rating_R = as.factor(ifelse(mpaa_rating == 'R', 'yes', 'no')))
+# Assign yes to new variable oscar_season, where thtr_rel_month is either "10", "11", "12". Otherwise no.
+dat <- dat %>% mutate(oscar_season = as.factor(ifelse(thtr_rel_month %in% c('10', '11', '12'), 'yes', 'no')))
+# Assign yes to new variable summer_season, where thtr_rel_month is either "5", 6", "7", "8". Otherwise no.
+dat <- dat %>% mutate(summer_season = as.factor(ifelse(thtr_rel_month %in% c('5', '6', '7', '8'), 'yes', 'no')))
+
+# newly created variables
+str(dat[, c((ncol(dat)-4):ncol(dat) )])
+
+```
+
+* * *
+
+## Part 3: Exploratory data analysis
+
+Conduct exploratory data analysis of the relationship between `audience_score` and the new variables constructed in the previous part.
+
+```{r dist of audience_score}
+# a new data set containing response var audience_score and 5 new varialbes.
+dat.eda <- na.omit(as.data.frame(dat[, c('audience_score', 'oscar_season', 'summer_season', 'mpaa_rating_R', 'drama', 'feature_film' )]))
+# calculate descriptive statistics of the distribution
+(score.mean <- mean(dat.eda$audience_score))
+(score.median <- median(dat.eda$audience_score))
+freq <- table(dat.eda$audience_score)
+(score.mode <- as.numeric(names(freq[which(freq == max(freq))])))
+summary(dat.eda$audience_score)
+IQR(dat.eda$audience_score)
+
+#
+hist(dat.eda$audience_score, breaks=50, col="cyan", main="Distribution of audience_score") 
+abline(v=score.mean, col="blue", lwd=4)
+abline(v=score.median, col="red", lwd=4) 
+abline(v=score.mode, col="forestgreen", lwd=4) 
+legend("topleft", inset=c(0.01, 0.01), lty=c(1,1,1), legend=c("Mean", "Median", "Mode"), lwd=c(4,4,4), col=c("red", "blue", "forestgreen"))
+
+```
+The `audience_score` shows a slight left skewed structure. The IQR of the audience_score is 34 (1st Qu - 46 and 3rd Qu. 80), while the mean is around 62.4, the median is 65 and the mode is about 81.
+
+To compare the variability of the different new variables, `audience_score` was summarized by the two groups of each new variable. And also a combined boxplot was used to show the summarized data. The new variables do not show much variability, which leads to the conclusion that none of the above variables are valuable towards the prediction of the audience score. From boxplot, there is a clear differentiation between "yes"" and "no" groups of variable `feature_film`, which indicates that variable `feature_film` might be relevant to `audience_score`. 
+
+```{r eda}
+# a function to summarize audience_score by earch variable
+dat.summ <- function(var, data) {
+  out = aggregate(audience_score ~ get(var), data=data, 
+                  function(x) round(c(mean=mean(x),median=median(x),min=min(x),max=max(x),IQR=IQR(x)),2))
+  names(out)[1] <- "yes_no"
+  cbind(data.frame(Variable=var),out)
+}
+# summary of audience_score by five variables
+do.call(rbind, lapply(names(dat.eda)[-1], dat.summ, data=dat.eda))
+
+# boxplot of audience_score by five variables
+par(mfrow=c(1,5))
+for (i in names(dat.eda)[-1]) {
+  boxplot(audience_score ~ get(i), data=dat.eda, col=c("red", "green"), main=i)
+}
+```
+Furthermore, Bayesian hypothesis test by calculating a Bayes factor for each feature was conducted to investigate whether the newly created variables influence `audience_score`. Here are the two hypothesis tests:
+
+$$H1:\mu_{no}=\mu_{yes}$$
+$$H2:\mu_{no}\neq\mu_{yes}$$
+```{r}
+# a function to get bayes factor for each variable
+getBF <- function(var, data) {
+  bayes_inference(y = audience_score, x = get(var), data = data, statistic = "mean", 
+                  type = "ht", null = 0, alternative = "twosided", 
+                  show_summ = FALSE)
+}
+
+# Bayes factor for each variable
+names(dat.eda)[2]
+bf2 <- getBF(names(dat.eda)[2], dat.eda)
+names(dat.eda)[3]
+bf3 <- getBF(names(dat.eda)[3], dat.eda)
+names(dat.eda)[4]
+bf4 <- getBF(names(dat.eda)[4], dat.eda)
+names(dat.eda)[5]
+bf5 <- getBF(names(dat.eda)[5], dat.eda)
+names(dat.eda)[6]
+bf6 <- getBF(names(dat.eda)[6], dat.eda)
+
+bf.out <- data.frame(Variable=names(dat.eda)[-1], H12=c(bf2$BF,bf3$BF,bf4$BF,rep(NA,2)), H21=c(rep(NA,3),bf5$BF,bf6$BF), Evidence_against=c(rep("H2 (Positive)",3),"H1 (Positive)", "H1 (Very Strong)"))
+names(bf.out)[2:3] <- c("BF[H1:H2]", "BF[H2:H1]")
+
+# summary of bayes factor for each variable
+bf.out
+
+```
+From table abobe, the newly created variable `feature_film` has Bayes factor `> 150`, which indicates very strong evdience against $H1:\mu_{no}=\mu_{yes}$. Other four variables have Bayes factors `< 30`, which mean there are positive evidence against either $H1:\mu_{no}=\mu_{yes}$ (`drama`) or $H2:\mu_{no}\neq\mu_{yes}$ (`oscar_season`, `summer_season`, `mpaa_rating_R`).In conclusion here, there is a significant difference in mean `audience_score` between feature and non-feathre films. There is no significant difference in mean `audience_score` between two groups of other four new variables (`oscar_season`, `summer_season`, `mpaa_rating_R`, `drama`).
+
+
+* * *
+
+## Part 4: Modeling
+The full model:
+audience_score ~ feature_film + drama + runtime + mpaa_rating_R + thtr_rel_year + oscar_season + summer_season + imdb_rating +
+imdb_num_votes + critics_score + best_pic_nom + best_pic_win + best_actor_win + best_actress_win + best_dir_win + top200_box
+
+### Bayesian Model Averaging (BMA)
+Bayesian model averaging is a comprehensive approach to address model uncertainty. Through calculating posterior distributions over coefficients and models, it evaluates the robustness of results to alternative specifications. BIC will be used as a way to approximate the log of the marginal likelihood and used to explore model uncertainty using posterior probabilities. The Bayesian information criterion (BIC) runs through several fitted model objects for which a log-likelihood value can be obtained, according to the formula $\text{-}2log\text{-}likelihood+npar\text{log(nobs)}$, where `npar` represents the number of parameters and `nobs` the number of observations in the fitted model.
+The model selection will be conducted on by using two different priors (BIC and Zellner-Siow). Later Akaike information criterion (AIC), which uses a backward variable elimination method, will be used to find a model. Final model was derived after comparing those three models using cross validation method.
+
+```{r}
+# variables of interest
+vars <- c( 'audience_score', 'feature_film', 'drama', 'runtime', 'mpaa_rating_R', 'thtr_rel_year',
+'oscar_season', 'summer_season', 'imdb_rating', 'imdb_num_votes', 'critics_score',
+'best_pic_nom', 'best_pic_win', 'best_actor_win', 'best_actress_win', 'best_dir_win',
+'top200_box')
+# a subset with audeince_score and other 16 explanatory variables.
+dat.model <- na.omit(as.data.frame(dat[, vars]))
+```
+
+### Bayesian Information Criterion as prior
+```{r}
+audience.BIC = bas.lm(formula = audience_score ~ .,
+                      prior = "BIC",
+                      modelprior = uniform(),
+                      data = dat.model)
+```
+Below is the marginal posterior inclusion probabilities, which is the probability that the predictor variable is included in the model.
+```{r}
+audience.BIC$probne0
+```
+#### Coefficient Summaries
+Below are the marginal posterior mean, standard deviation and posterior inclusion probabilities obtained by BMA.
+```{r}
+audience.BIC.coef = coef(audience.BIC)
+interval <- confint(audience.BIC.coef)
+names <- c("post mean", "post sd", colnames(interval))
+interval <- cbind(audience.BIC.coef$postmean, audience.BIC.coef$postsd, interval)
+colnames(interval) <- names
+interval
+```
+
+The summary of the given model indicates the top 5 models. The model containing the `intercept`, `runtime`, `mdb_rating`, `critics_score` has the best performance.
+```{r}
+summary(audience.BIC)[1:17, 2:6][apply(summary(audience.BIC)[1:17, 2:6], 1, sum) != 0, ]
+```
+#### Model space
+```{r }
+#image(audience.BIC, rotate = FALSE)
+#par(mfrow=c(2,2))
+#plot(audience.BIC, ask = F, add.smooth = F, caption="", col.in = 'steelblue', col.ex = 'darkgrey', pch=17, lwd=2)
+```
+
+### Zellner-Siow Cauchy as prior
+```{r}
+audience.ZS = bas.lm(formula = audience_score ~ .,
+                     data = dat.model,
+                     prior="ZS-null",
+                     modelprior=uniform(),
+                     method = "MCMC",
+                     MCMC.iterations = 10^6)
+
+```
+The summary of the given model indicates the top 5 models. The model containing the `intercept`, `mdb_rating`, `critics_score` has the best performance.
+
+```{r}
+summary(audience.ZS)[1:17, 2:6][apply(summary(audience.ZS)[1:17, 2:6], 1, sum) != 0, ]
+```
+
+#### Model space
+```{r}
+#image(audience.ZS, rotate = FALSE)
+#par(mfrow=c(2,2))
+#plot(audience.ZS, ask=F, add.smooth=F, caption="", col.in = 'steelblue', col.ex = 'darkgrey', pch=17, lwd=2)
+```
+
+### AIC model selection
+The Akaike information criterion (AIC) is a measure of the relative quality of statistical models for a given set of data. Given a collection of models for the data, AIC estimates the quality of each model, relative to each of the other models. Hence, AIC provides a means for model selection.
+The AIC model might not deliver the parsimonious model, but often provides a model, which provides a better prediction. We use the backward elimination to find the best model
+```{r}
+lm.fit <- lm(audience_score ~ ., data = dat.model)
+aic.model <- stepAIC(lm.fit, direction = 'backward', trace = FALSE)
+aic.model$anova
+```
+The best model selected by AIC is
+audience_score ~ feature_film + drama + runtime + mpaa_rating_R + thtr_rel_year + oscar_season + summer_season + imdb_rating + imdb_num_votes + critics_score + best_pic_nom + best_pic_win + best_actor_win + best_actress_win + best_dir_win + top200_box
+    
+### cross validation to select models
+Sample 80% of observations to use as training set, fit the models, then predict the remaining 20% observations which was used as test set. Calculate the MSE as $\text{MSE}_j=\frac{1}{n}\sum_{i=1}^{n}(y_i-\hat{y_i})^{2}$. Repeat 100 times and calculate the mean of `MSE`.
+```{r CV}
+mse = NULL
+for (i in 1:100) {
+  train = sample(nrow(dat.model), nrow(dat.model)*0.8)
+  
+  # AIC
+  lm.fit <- lm(audience_score ~ ., data = dat.model[train, ])
+  aic.model <- stepAIC(lm.fit, direction = 'backward', trace = FALSE)
+  
+  # BIC
+  dat.final1 <- na.omit(as.data.frame(dat[, c("audience_score", "runtime", "imdb_rating", "critics_score")]))
+  audience.BIC = bas.lm(audience_score ~ .,
+                       data = dat.final1[train, ],
+                       prior = "BIC",
+                       modelprior = uniform(),
+                       method = "MCMC",
+                       MCMC.iterations = 10^6)
+  
+  # ZS
+  dat.final2 <- na.omit(as.data.frame(dat[, c("audience_score", "imdb_rating", "critics_score")]))
+  audience.ZS = bas.lm(audience_score ~ .,
+                       data = dat.final2[train, ],
+                       prior = "ZS-null",
+                       modelprior = uniform(),
+                       method = "MCMC",
+                       MCMC.iterations = 10^6)
+  
+  pred.aic=predict(aic.model, dat.model[-train, ])
+  mse.aic = sum((dat.model[-train, ]$audience_score - pred.aic)^2)/nrow(dat.model[-train, ])
+  
+  pred.bic=predict(audience.BIC, dat.final1[-train, ])
+  mse.bic = sum((dat.final1[-train, ]$audience_score - pred.bic$Ybma)^2)/nrow(dat.final2[-train, ])
+  
+  pred.zs=predict(audience.ZS, dat.final2[-train, ])
+  mse.zs = sum((dat.final2[-train, ]$audience_score - pred.zs$Ybma)^2)/nrow(dat.final2[-train, ])
+  
+  mse = rbind(mse, data.frame(mse.aic=mse.aic, mse.bic=mse.bic, mse.zs=mse.zs))
+}
+
+plot(apply(mse, 2, mean), col=2:4, pch=15:17,cex=2, xaxt="n",xlab="",ylab="MSE", main="MSE of 3 Models after 5-fold Cross Validation")
+legend("topleft", inset=c(0.01,0.01), legend=c("stepAIC Derived Model", "BIC Prior Derived Model", "Zellner-Siow Prior Derived Model"), pch=15:17, col=2:4, cex=1, pt.cex = 2)
+
+```
+From the figure, the model derived using BIC as prior has lower MSE (`r as.numeric(apply(mse, 2, mean)[2])`) than model derived using Zellner-Siow (`r as.numeric(apply(mse, 2, mean)[3])`) as prior or model derived from AIC step backward variable selection (`r as.numeric(apply(mse, 2, mean)[1])`) has. Then, the final model is:
+**audience_score ~ runtime + imdb_rating + critics_score**
+
+
+* * *
+
+## Part 5: Prediction
+A new movie in 2016:
+`KUBO AND THE TWO STRINGS (2016)`, run time: 101min, imdb rating:7.8, scitics score:97, audience score: 86.
+http://www.imdb.com/title/tt4302938/
+https://www.rottentomatoes.com/m/kubo_and_the_two_strings_2016
+
+
+```{r}
+dat.final <- na.omit(as.data.frame(dat[, c("audience_score", "runtime", "imdb_rating", "critics_score")]))
+audience.BIC = bas.lm(audience_score ~ .,
+                     data = dat.final,
+                     prior = "BIC",
+                     modelprior = uniform(),
+                     method = "MCMC",
+                     MCMC.iterations = 10^6)
+movie.new <- data.frame(runtime=101, imdb_rating = 7.8, critics_score = 97, audience_score = 86)
+predict.new <- predict(audience.BIC, newdata = movie.new, estimator="BMA")
+predict.new$Ybma
+
+```
+The predicted value for `KUBO AND THE TWO STRINGS` is ~ 85, which is approximately close to audience_score 86 in rotten tomatoes.
+
+
+* * *
+
+## Part 6: Conclusion
+In this project, I studied the audience score for a movie and how it depends on other independent variables for this movie. Using Bayesian model average many models can be constructed to perform a better prediction.
+Although in exploratory data analysis, the newly creatly variable `feature_film` has influence on audience score, it is not included in later prediction models. Neither do all other 4 newly created models. The variable `imdb_rating` has the highest posterior probability.
+Creating a model, which has a high predictive power is not so easy to reach. Using Bayes for better
+prediction is only one part of the game.
+The used approach was unable to show our full sentiments "prior" knowledge. Perhaps some other (other than IMDB and Rotten Tomatoes) ratings with more priors density variables could be used to utilize the power of Bayesian prediction. A knowledgable prior can be better.
+Prediction through model selection using different statistical method can not substitute for expert's knowledge or specific domain knowledge.

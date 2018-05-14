@@ -1,2 +1,2 @@
 # Bayesian_Statistics
-Bayesian Statistics by Duke University on Coursera.
+Final Project of [Bayesian Statistics](https://www.coursera.org/learn/bayesian) by Duke University on Coursera.
